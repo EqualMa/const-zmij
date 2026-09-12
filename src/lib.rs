@@ -70,18 +70,26 @@
     clippy::wildcard_imports
 )]
 
+use self::{const_array::ConstArray, const_range::ConstRange};
+
+#[cfg(any())]
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 mod stdarch_x86;
 #[cfg(test)]
 mod tests;
 mod traits;
 
+mod const_array;
+mod const_range;
+
+#[cfg(any())]
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 use crate::stdarch_x86::{
     __m128i, _mm_add_epi64, _mm_cmpgt_epi8, _mm_cvtsi128_si64, _mm_load_si128, _mm_movemask_epi8,
     _mm_mul_epu32, _mm_mulhi_epu16, _mm_mullo_epi16, _mm_or_si128, _mm_set_epi64x,
     _mm_setzero_si128, _mm_srli_epi64,
 };
+#[cfg(any())]
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "sse2",
@@ -91,6 +99,7 @@ use crate::stdarch_x86::{
 use crate::stdarch_x86::{
     _mm_insert_epi64, _mm_mullo_epi32, _mm_shuffle_epi8, _mm_srli_epi32, _mm_storeu_si128,
 };
+#[cfg(any())]
 #[cfg(all(
     target_arch = "x86_64",
     target_feature = "sse2",
@@ -101,6 +110,7 @@ use crate::stdarch_x86::{
     _mm_shuffle_epi32, _mm_slli_epi16, _mm_slli_epi32, _mm_srli_epi16, _mm_sub_epi16, _MM_SHUFFLE,
 };
 use crate::traits::Float as _;
+#[cfg(any())] // TODO: implement const fn for target_feature = "neon"
 #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
 use core::arch::aarch64::{
     int16x8_t, int32x2_t, int32x4_t, uint16x8_t, uint64x1_t, uint8x16_t, vaddq_u16, vcgtzq_s8,
@@ -112,6 +122,7 @@ use core::arch::aarch64::{
     vreinterpretq_u8_s16, vreinterpretq_u8_u64, vrev64q_u8, vsetq_lane_u64, vshll_n_u16,
     vshr_n_u32, vshrn_n_u16, vst1q_u8,
 };
+#[cfg(any())]
 #[cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), not(miri)))]
 use core::arch::asm;
 use core::mem::{self, MaybeUninit};
@@ -178,12 +189,28 @@ const fn umul128_hi64(x: u64, y: u64) -> u64 {
 
 // Returns (x * y + c) >> 64.
 #[cfg_attr(feature = "no-panic", no_panic)]
+#[rustfmt::skip]
+const
 fn umul128_add_hi64(x: u64, y: u64, c: u64) -> u64 {
+    mod u128 {
+        pub(crate) const fn from(v: u64) -> u128 {
+            v as _
+        }
+    }
+
     ((u128::from(x) * u128::from(y) + u128::from(c)) >> 64) as u64
 }
 
 #[cfg_attr(feature = "no-panic", no_panic)]
+#[rustfmt::skip]
+const
 fn umul192_hi128(x_hi: u64, x_lo: u64, y: u64) -> uint128 {
+    mod u64 {
+        pub(crate) const fn from(v: bool) -> u64 {
+            v as _
+        }
+    }
+
     let p = umul128(x_hi, y);
     let lo = (p as u64).wrapping_add((umul128(x_lo, y) >> 64) as u64);
     uint128 {
@@ -194,6 +221,8 @@ fn umul192_hi128(x_hi: u64, x_lo: u64, y: u64) -> uint128 {
 
 // Returns x / 10 for x <= 2**62.
 #[cfg_attr(feature = "no-panic", no_panic)]
+#[rustfmt::skip]
+const
 fn div10(x: u64) -> u64 {
     debug_assert!(x < (1 << 62));
     // ceil(2**64 / 10) computed as (1 << 63) / 5 + 1 to avoid int128.
@@ -213,6 +242,16 @@ const fn compute_dec_exp(bin_exp: i32, regular: bool) -> i32 {
     (bin_exp * LOG10_2_SIG - !regular as i32 * LOG10_3_OVER_4_SIG) >> LOG10_2_EXP
 }
 
+#[derive(Clone, Copy)]
+struct ConstFloat<F>(F);
+
+impl<F: traits::Float> traits::Float for ConstFloat<F> {
+    const MANTISSA_DIGITS: u32 = F::MANTISSA_DIGITS;
+    const MIN_10_EXP: i32 = F::MIN_10_EXP;
+    const MAX_10_EXP: i32 = F::MAX_10_EXP;
+    const MAX_DIGITS10: u32 = F::MAX_DIGITS10;
+}
+
 trait FloatTraits: traits::Float {
     // Note: Rust port uses wider fixed-notation ranges than upstream.
     const FIXED_DEC_EXP: RangeInclusive<i32>;
@@ -229,41 +268,95 @@ trait FloatTraits: traits::Float {
 
     type DecDigitsType: Copy;
 
+    #[cfg(any())]
     #[cfg(any(
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
         all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
     ))]
     type DecUnshuffledType;
+}
 
-    fn to_bits(self) -> Self::SigType;
+macro_rules! impl_for_floats {
+    ({
+        #[common]
+        {$($common_items:tt)*}
+        $($rest:tt)*
+    }) => {
+        const _: () = {
+            $($common_items)*
+            impl_for_floats! {{ $($rest)* }}
+        };
+    };
+    ({
+        {$($f32_items:tt)*}
+        {$($f64_items:tt)*}
 
-    fn is_negative(bits: Self::SigType) -> bool {
-        (bits >> (Self::NUM_BITS - 1)) != Self::SigType::from(0)
+        $($imp:tt)*
+    }) => {
+        const _: () = {
+            $($f32_items)*
+            $($imp)*
+        };
+        const _: () = {
+            $($f64_items)*
+            $($imp)*
+        };
+    };
+}
+
+impl_for_floats!({
+    {
+        use f32 as FLOAT;
+    }
+    {
+        use f64 as FLOAT;
     }
 
-    fn get_sig(bits: Self::SigType) -> Self::SigType {
-        bits & (Self::IMPLICIT_BIT - Self::SigType::from(1))
+    type SelfSigType = <ConstFloat<FLOAT> as FloatTraits>::SigType;
+
+    impl ConstFloat<FLOAT> {
+        const fn SigType_from(v: u8) -> SelfSigType {
+            v as _
+        }
     }
 
-    fn get_exp(bits: Self::SigType) -> i64 {
-        (bits << 1u8 >> (Self::NUM_SIG_BITS + 1)).into() as i64
+    struct SigTypeIntoU64(SelfSigType);
+
+    impl SigTypeIntoU64 {
+        const fn into(self) -> u64 {
+            self.0 as _
+        }
     }
 
+    #[rustfmt::skip]
+impl ConstFloat<FLOAT> {
+    #[inline]
+    const fn to_bits(self) -> SelfSigType {
+        self.0.to_bits()
+    }
+
+    const fn is_negative(bits: SelfSigType) -> bool {
+        (bits >> (Self::NUM_BITS - 1)) != Self::SigType_from(0)
+    }
+
+    const fn get_sig(bits: SelfSigType) -> SelfSigType {
+        bits & (Self::IMPLICIT_BIT - Self::SigType_from(1))
+    }
+
+    const fn get_exp(bits: SelfSigType) -> i64 {
+        SigTypeIntoU64(bits << 1u8 >> (Self::NUM_SIG_BITS + 1)).into() as i64
+    }
+
+    // Note that const-zmij removes declaration of trait methods
     // Converts a significand to a string, removing trailing zeros. value has up
     // to 17 decimal digits (16-17 for normals) for f64 and up to 9 digits (8-9
     // for normals) for f32.
-    fn to_digits(value: u64, d: &Data) -> DecDigits<Self>;
-
-    unsafe fn write_exp_float_simd(
-        buffer: *mut u8,
-        dig: &DecDigits<Self>,
-        last_digit: i32,
-        has_last_digit: bool,
-        has_extra_digit: bool,
-        exp_data: u64,
-        d: &Data,
-    ) -> *mut u8;
 }
+});
+
+#[rustfmt::skip]
+const _: () = {
+    type f32 = ConstFloat<::core::primitive::f32>;
 
 impl FloatTraits for f32 {
     // Upstream uses -4..=6.
@@ -276,22 +369,26 @@ impl FloatTraits for f32 {
 
     type DecDigitsType = u64;
 
+    #[cfg(any())]
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     type DecUnshuffledType = uint8x16_t;
     #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
     type DecUnshuffledType = __m128i;
+}
+};
 
+impl ConstFloat<f32> {
     #[inline]
-    fn to_bits(self) -> Self::SigType {
-        self.to_bits()
-    }
-
-    #[inline]
+    #[rustfmt::skip]
+    const
     fn to_digits(value: u64, d: &Data) -> DecDigits<Self> {
+        Self::
         to_digits_32(value, d)
     }
 
     #[inline]
+    #[rustfmt::skip]
+    const
     unsafe fn write_exp_float_simd(
         buffer: *mut u8,
         dig: &DecDigits<Self>,
@@ -302,6 +399,7 @@ impl FloatTraits for f32 {
         d: &Data,
     ) -> *mut u8 {
         unsafe {
+            Self::
             write_exp_float_simd_32(
                 buffer,
                 dig,
@@ -315,6 +413,10 @@ impl FloatTraits for f32 {
     }
 }
 
+#[rustfmt::skip]
+const _: () = {
+    type f64 = ConstFloat<::core::primitive::f64>;
+
 impl FloatTraits for f64 {
     // Upstream uses -4..=15.
     const FIXED_DEC_EXP: RangeInclusive<i32> = -5..=15;
@@ -324,33 +426,41 @@ impl FloatTraits for f64 {
 
     type SigType = u64;
 
+    #[cfg(any())]
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     type DecDigitsType = uint16x8_t;
+    #[cfg(any())]
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     type DecDigitsType = __m128i;
+    /*
     #[cfg(not(any(
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
         all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
     )))]
+    */
     type DecDigitsType = [u64; 2];
 
+    #[cfg(any())]
     #[cfg(any(
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
         all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
     ))]
     type DecUnshuffledType = ();
+}
+};
 
+impl ConstFloat<f64> {
     #[inline]
-    fn to_bits(self) -> Self::SigType {
-        self.to_bits()
-    }
-
-    #[inline]
+    #[rustfmt::skip]
+    const
     fn to_digits(value: u64, d: &Data) -> DecDigits<Self> {
+        Self::
         to_digits_64(value, d)
     }
 
     #[inline]
+    #[rustfmt::skip]
+    const
     unsafe fn write_exp_float_simd(
         _buffer: *mut u8,
         _dig: &DecDigits<Self>,
@@ -478,6 +588,8 @@ impl Pow10SignificandTable {
     }
 
     #[inline]
+    #[rustfmt::skip]
+    const
     unsafe fn get_unchecked(&self, dec_exp: i32) -> uint128 {
         const DEC_EXP_MIN: i32 = -293;
         let i = dec_exp - DEC_EXP_MIN;
@@ -496,16 +608,21 @@ impl Pow10SignificandTable {
             // The caller passes -e - 1 as dec_exp, so ~dec_exp recovers e.
             // Picking the base so that e itself is the index lets both loads
             // share sxtw addressing.
+            /*
             #[cfg_attr(
                 not(all(any(target_arch = "x86_64", target_arch = "aarch64"), not(miri))),
                 allow(unused_mut)
             )]
+            */
+            #[allow(unused_mut)]
             let mut p = self
                 .data
                 .as_ptr()
                 .offset(Self::NUM_POW10S as isize + DEC_EXP_MIN as isize);
+            /* // TODO: can this be safely commented out?
             #[cfg(all(any(target_arch = "x86_64", target_arch = "aarch64"), not(miri)))]
             asm!("/*{0}*/", inout(reg) p);
+            */
             uint128 {
                 hi: *p.offset(!(dec_exp as isize)),
                 lo: *p.offset(!(dec_exp as isize) + Self::NUM_POW10S as isize),
@@ -544,13 +661,19 @@ const fn compute_exp_shift(bin_exp: i32, dec_exp: i32) -> u8 {
 }
 
 struct ExpShiftTable {
-    data: [u8; if Self::ENABLE {
-        f64::EXP_MASK as usize + 1
-    } else {
-        0
-    }],
+    data: ConstArray<
+        [u8; if Self::ENABLE {
+            <ConstFloat<f64> as FloatTraits>::EXP_MASK as usize + 1
+        } else {
+            0
+        }],
+    >,
 }
 
+const _: () = {
+    type f64 = ConstFloat<::core::primitive::f64>;
+
+    #[rustfmt::skip]
 impl ExpShiftTable {
     const ENABLE: bool = cfg!(not(opt_level = "s"));
     // extra_shift must be >= 3 to keep shift non-negative and <= 11 to fit the
@@ -576,18 +699,23 @@ impl ExpShiftTable {
             raw_exp += 1;
         }
 
+        let data = ConstArray(data);
+
         ExpShiftTable { data }
     }
 }
+};
 
 // An optional table of precomputed exponent strings for exponential notation.
 // Each entry packs "e+dd" or "e+ddd" into a u64 with the length in byte 7.
 struct ExpStringTable {
-    data: [u64; if Self::ENABLE {
-        (f64::MAX_10_EXP - Self::MIN_DEC_EXP + 1) as usize
-    } else {
-        0
-    }],
+    data: ConstArray<
+        [u64; if Self::ENABLE {
+            (f64::MAX_10_EXP - Self::MIN_DEC_EXP + 1) as usize
+        } else {
+            0
+        }],
+    >,
 }
 
 impl ExpStringTable {
@@ -620,6 +748,8 @@ impl ExpStringTable {
             e += 1;
         }
 
+        let data = ConstArray(data);
+
         ExpStringTable { data }
     }
 }
@@ -636,10 +766,11 @@ impl ExpStringTable {
 // byte is past the string and ignored by the caller.
 #[repr(C, align(16))]
 struct ExpFloatShuffleTable {
-    data: [u8; if Self::ENABLE { 32 * 16 } else { 0 }],
+    data: ConstArray<[u8; if Self::ENABLE { 32 * 16 } else { 0 }]>,
 }
 
 struct ExpFloatShuffleTableEntry {
+    /*
     #[cfg_attr(
         not(any(
             all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
@@ -647,26 +778,37 @@ struct ExpFloatShuffleTableEntry {
         )),
         allow(dead_code)
     )]
+    */
+    #[allow(dead_code)]
     shuffle: *const u8,
     length: u8,
 }
 
 impl ExpFloatShuffleTable {
+    #[cfg(any())]
     const ENABLE: bool = cfg!(any(
         all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
     )) && ExpStringTable::ENABLE;
+    const ENABLE: bool = false;
 
     const EXP_POS: u8 = 8;
     const LAST_DIGIT_POS: u8 = 12;
     const POINT_POS: u8 = 13;
 
+    #[rustfmt::skip]
+    const
     unsafe fn get_entry(
         &self,
         num_digits: i32,
         has_last_digit: bool,
         has_extra_digit: bool,
     ) -> ExpFloatShuffleTableEntry {
+        mod i32 {
+            pub(crate) const fn from(v: bool) -> i32 {
+                v as _
+            }
+        }
         let idx = (num_digits - 1) * 4 + i32::from(has_last_digit) * 2 + i32::from(has_extra_digit);
         ExpFloatShuffleTableEntry {
             shuffle: unsafe { self.data.as_ptr().add(idx as usize * 16) },
@@ -734,10 +876,13 @@ impl ExpFloatShuffleTable {
             idx += 1;
         }
 
+        let data = ConstArray(data);
+
         ExpFloatShuffleTable { data }
     }
 }
 
+/*
 #[cfg(any(
     not(any(
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
@@ -745,7 +890,10 @@ impl ExpFloatShuffleTable {
     )),
     all(test, target_endian = "little"),
 ))]
+*/
 #[cfg_attr(feature = "no-panic", no_panic)]
+#[rustfmt::skip]
+const
 fn count_trailing_nonzeros(x: u64) -> usize {
     // We count the number of bytes until there are only zeros left.
     // The code is equivalent to
@@ -778,6 +926,8 @@ static DIGITS2: Digits2 = Digits2(
 // Converts value in the range [0, 100) to a string. GCC generates a bit better
 // code when value is pointer-size (https://www.godbolt.org/z/5fEPMT1cc).
 #[cfg_attr(feature = "no-panic", no_panic)]
+#[rustfmt::skip]
+const
 unsafe fn digits2(value: usize) -> &'static u16 {
     debug_assert!(value < 100);
 
@@ -793,35 +943,45 @@ const NEG10K: u32 = ((1u64 << 32) - 10000) as u32;
 
 const DIV100_EXP: i32 = 19;
 const DIV100_SIG: u32 = (1 << DIV100_EXP) / 100 + 1;
+/*
 #[cfg(not(all(
     target_arch = "x86_64",
     target_feature = "sse2",
     not(target_feature = "sse4.1"),
     not(miri)
 )))]
+*/
 const NEG100: u32 = (1 << 16) - 100;
 
+/*
 #[cfg(not(any(
     all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
     all(target_arch = "aarch64", target_feature = "neon", not(miri)),
 )))]
+*/
 const DIV10_EXP: i32 = 10;
+/*
 #[cfg(not(any(
     all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
     all(target_arch = "aarch64", target_feature = "neon", not(miri)),
 )))]
+*/
 const DIV10_SIG: u32 = (1 << DIV10_EXP) / 10 + 1;
+/*
 #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2", not(miri))))]
+*/
 const NEG10: u32 = (1 << 8) - 10;
 
 const ZEROS: u64 = 0x0101010101010101 * b'0' as u64;
 
+#[rustfmt::skip]
 #[repr(C, align(64))]
 struct Data {
     threshold: AArch64Mem<1_000_000_000_000_000>,
     // +6 is needed for boundary cases found by verify.py.
     biased_half: AArch64Mem<{ (1 << 63) + 6 }>,
 
+    /*
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     mul_const: u64,
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
@@ -863,6 +1023,7 @@ struct Data {
     neg10k: u128,
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     zeros: u128,
+    */
 
     exp_shifts: ExpShiftTable,
     exp_strings: ExpStringTable,
@@ -870,6 +1031,7 @@ struct Data {
     exp_float_shuffles: ExpFloatShuffleTable,
 }
 
+#[cfg(any())]
 impl Data {
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     const fn splat64(x: u64) -> u128 {
@@ -902,10 +1064,12 @@ impl Data {
     const NEG10K: i32 = 0x10000 - 10000;
 }
 
+#[rustfmt::skip]
 static STATIC_DATA: Data = Data {
     threshold: AArch64Mem::new(),
     biased_half: AArch64Mem::new(),
 
+    /*
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     mul_const: 0xabcc77118461cefd,
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
@@ -955,6 +1119,7 @@ static STATIC_DATA: Data = Data {
     neg10k: Data::splat64(NEG10K as u64),
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     zeros: Data::splat64(ZEROS),
+    */
 
     exp_shifts: ExpShiftTable::new(),
     exp_strings: ExpStringTable::new(),
@@ -963,6 +1128,7 @@ static STATIC_DATA: Data = Data {
 };
 
 // Converts four numbers < 10000, one in each 32-bit lane, to BCD digits.
+#[cfg(any())]
 #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
 fn to_bcd_4x4(mut efgh_abcd_mnop_ijkl: int32x4_t, d: &Data) -> uint8x16_t {
@@ -993,6 +1159,7 @@ fn to_bcd_4x4(mut efgh_abcd_mnop_ijkl: int32x4_t, d: &Data) -> uint8x16_t {
 }
 
 // An optimized version for NEON by Dougall Johnson.
+#[cfg(any())]
 #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
@@ -1035,6 +1202,7 @@ fn to_unshuffled_digits(value: u64, d: &Data) -> uint8x16_t {
 
 // Converts four numbers < 10000, one in each 32-bit lane, to BCD digits.
 // Digits in each 32-bit lane will be in order for SSE2, reversed for SSE4.1.
+#[cfg(any())]
 #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
 #[cfg_attr(feature = "no-panic", no_panic)]
 fn to_bcd_4x4(y: __m128i, d: &Data) -> __m128i {
@@ -1071,22 +1239,36 @@ fn to_bcd_4x4(y: __m128i, d: &Data) -> __m128i {
     }
 }
 
+/*
 #[cfg(not(any(
     all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
     all(target_arch = "aarch64", target_feature = "neon", not(miri)),
 )))]
+*/
 struct BcdResult {
     bcd: u64,
     len: usize,
 }
 
+/*
 #[cfg(not(any(
     all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
     all(target_arch = "aarch64", target_feature = "neon", not(miri)),
 )))]
+*/
 #[cfg_attr(feature = "no-panic", no_panic)]
+#[rustfmt::skip]
+const
 fn to_bcd8(abcdefgh: u64) -> BcdResult {
+    mod u64 {
+        pub(crate) const fn from(v: u32) -> u64 {
+            v as _
+        }
+    }
+
+    /* // TODO: is this ok?
     #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2", not(miri))))]
+    */
     let bcd = {
         // An optimization from Xiang JunBo.
         // Three steps BCD. Base 10000 -> base 100 -> base 10.
@@ -1106,6 +1288,7 @@ fn to_bcd8(abcdefgh: u64) -> BcdResult {
         a_b_c_d_e_f_g_h.to_be()
     };
 
+    #[cfg(any())] // TODO: is this ok?
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     let bcd = {
         // Load constants from memory.
@@ -1131,22 +1314,32 @@ fn to_bcd8(abcdefgh: u64) -> BcdResult {
 
 struct DecDigits<Float: FloatTraits> {
     digits: Float::DecDigitsType,
+    /*
     // `unshuffled` is the byte-reversed BCD vector used by write_exp_float_simd.
     #[cfg(any(
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
         all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
     ))]
     unshuffled: Float::DecUnshuffledType,
+    */
     num_digits: usize,
 }
 
+#[rustfmt::skip]
+const _: () = {
+    type f64 = ConstFloat<::core::primitive::f64>;
+
+    impl f64 {
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
+const
 fn to_digits_64(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f64> {
+    /*
     #[cfg(not(any(
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
         all(target_arch = "x86_64", target_feature = "sse2", not(miri)),
     )))]
+    */
     {
         let hi = (value / 100_000_000) as u32;
         let lo = (value % 100_000_000) as u32;
@@ -1164,6 +1357,7 @@ fn to_digits_64(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f6
         }
     }
 
+    #[cfg(any())]
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     {
         unsafe {
@@ -1185,6 +1379,7 @@ fn to_digits_64(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f6
         }
     }
 
+    #[cfg(any())]
     #[cfg(all(target_arch = "x86_64", target_feature = "sse2", not(miri)))]
     {
         let hi = (value / 100_000_000) as u32;
@@ -1240,9 +1435,15 @@ fn to_digits_64(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f6
     }
 }
 
+    }
+
+    type f32 = ConstFloat<::core::primitive::f32>;
+    impl f32 {
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
+const
 fn to_digits_32(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f32> {
+    #[cfg(any())]
     #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
     {
         // Inline to_bcd8's SSE4.1 body so we can return the unshuffled xmm too;
@@ -1262,6 +1463,7 @@ fn to_digits_32(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f3
         }
     }
 
+    #[cfg(any())]
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     {
         // Inline to_bcd8's NEON body so we can return the unshuffled vector
@@ -1287,10 +1489,12 @@ fn to_digits_32(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f3
         }
     }
 
+    /*
     #[cfg(not(any(
         all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
         all(target_arch = "aarch64", target_feature = "neon", not(miri)),
     )))]
+    */
     {
         let result = to_bcd8(value);
         DecDigits {
@@ -1301,6 +1505,7 @@ fn to_digits_32(value: u64, #[allow(unused_variables)] d: &Data) -> DecDigits<f3
 }
 
 #[cfg_attr(feature = "no-panic", no_panic)]
+const
 unsafe fn write_exp_float_simd_32(
     buffer: *mut u8,
     dig: &DecDigits<f32>,
@@ -1310,11 +1515,28 @@ unsafe fn write_exp_float_simd_32(
     exp_data: u64,
     d: &Data,
 ) -> *mut u8 {
+    mod u32 {
+        pub(crate) const fn from(v: u8) -> u32 {
+            v as _
+        }
+    }
+    mod u64 {
+        pub(crate) const fn from(v: u32) -> u64 {
+            v as _
+        }
+    }
+    mod usize {
+        pub(crate) const fn from(v: bool) -> usize {
+            v as _
+        }
+    }
+
     // Packed for insertion into lane 1: byte 0 of `tail` lands at register byte
     // exp_pos (8), so the exp string fills exp_pos..exp_pos+3; the prefix
     // shifts place '0'+last_digit at last_digit_pos (12) and '.' at point_pos
     // (13).
     let prefix = (u32::from(b'.') << 8) + u32::from(b'0') + last_digit as u32;
+    /*
     #[cfg_attr(
         not(any(
             all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)),
@@ -1322,6 +1544,8 @@ unsafe fn write_exp_float_simd_32(
         )),
         allow(unused_variables)
     )]
+    */
+    #[allow(unused_variables)]
     let tail = exp_data | (u64::from(prefix) << 32);
     let entry = unsafe {
         d.exp_float_shuffles
@@ -1340,6 +1564,7 @@ unsafe fn write_exp_float_simd_32(
         _mm_storeu_si128(buffer.cast::<__m128i>(), out);
     }
 
+    #[cfg(any())]
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     unsafe {
         let ascii: uint8x16_t = vorrq_u8(dig.unshuffled, vdupq_n_u8(b'0'));
@@ -1354,6 +1579,9 @@ unsafe fn write_exp_float_simd_32(
     unsafe { buffer.add(length) }
 }
 
+    }
+};
+
 struct ToDecimalResult {
     sig: i64,
     exp: i32,
@@ -1361,15 +1589,48 @@ struct ToDecimalResult {
     has_last_digit: bool,
 }
 
+impl_for_floats! {{
+    #[common]
+    {
+        mod i64 {
+            pub(crate) const fn from(v: i32) -> i64 {
+                v as _
+            }
+        }
+        mod u64 {
+            pub(crate) const fn from(v: bool) -> u64 {
+                v as _
+            }
+        }
+    }
+    {
+        use f32 as FLOAT;
+    }
+    {
+        use f64 as FLOAT;
+    }
+
+    type Float = ConstFloat<FLOAT>;
+
+    type UInt = <ConstFloat<FLOAT> as FloatTraits>::SigType;
+    const fn UInt_from(v: u8) -> UInt {
+        v as _
+    }
+
+    struct UIntIntoU64(UInt);
+    impl UIntIntoU64 {
+        const fn into(self) -> u64 {
+            self.0 as _
+        }
+    }
+
+impl ConstFloat<FLOAT> {
 // Here be 🐉s.
 // Converts a binary FP number bin_sig * 2**bin_exp to the shortest decimal
 // representation, where bin_exp = raw_exp - exp_offset.
 #[cfg_attr(feature = "no-panic", no_panic)]
 #[inline]
-fn to_decimal<Float, UInt>(bin_sig: UInt, raw_exp: i64, regular: bool, d: &Data) -> ToDecimalResult
-where
-    Float: FloatTraits,
-    UInt: traits::UInt,
+const fn to_decimal(bin_sig: UInt, raw_exp: i64, regular: bool, d: &Data) -> ToDecimalResult
 {
     let bin_exp = raw_exp - i64::from(Float::EXP_OFFSET);
     let num_bits = mem::size_of::<UInt>() as i32 * 8;
@@ -1379,7 +1640,7 @@ where
         let dec_exp = compute_dec_exp(bin_exp as i32, false);
         let shift = compute_exp_shift(bin_exp as i32, dec_exp + 1).wrapping_add(EXTRA_SHIFT as u8);
         let pow10 = unsafe { d.pow10_significands.get_unchecked(-dec_exp - 1) };
-        let p = umul192_hi128(pow10.hi, pow10.lo, (bin_sig << shift).into());
+        let p = umul192_hi128(pow10.hi, pow10.lo, UIntIntoU64(bin_sig << shift).into());
 
         let mut integral = p.hi >> EXTRA_SHIFT;
         let fractional = (p.hi << (64 - EXTRA_SHIFT)) | (p.lo >> EXTRA_SHIFT);
@@ -1410,6 +1671,8 @@ where
     } else {
         compute_dec_exp(bin_exp as i32, true)
     };
+
+    #[cfg(any())] // TODO: is this ok?
     #[cfg(not(miri))]
     #[allow(unused_unsafe)]
     unsafe {
@@ -1420,6 +1683,8 @@ where
         asm!("/*{0:w}*/", inout(reg) dec_exp);
     }
     let mut shift = if ExpShiftTable::ENABLE {
+        type f64 = ConstFloat<::core::primitive::f64>;
+
         *unsafe {
             d.exp_shifts
                 .data
@@ -1428,18 +1693,18 @@ where
     } else {
         compute_exp_shift(bin_exp as i32, dec_exp + 1).wrapping_add(EXTRA_SHIFT as u8)
     };
-    let even = UInt::from(1) - (bin_sig & UInt::from(1));
+    let even = UInt_from(1) - (bin_sig & UInt_from(1));
 
     if num_bits == 32 {
         const EXTRA_SHIFT: usize = 34;
         shift += (EXTRA_SHIFT - ExpShiftTable::EXTRA_SHIFT) as u8;
         let pow10_hi = unsafe { d.pow10_significands.get_unchecked(-dec_exp - 1) }.hi;
-        let p = umul128_hi64(pow10_hi + 1, bin_sig.into() << shift);
+        let p = umul128_hi64(pow10_hi + 1, UIntIntoU64(bin_sig).into() << shift);
 
         let mut integral = p >> EXTRA_SHIFT;
         let fractional = p & ((1u64 << EXTRA_SHIFT) - 1);
 
-        let half_ulp = (pow10_hi >> (65 - shift as usize)) + even.into();
+        let half_ulp = (pow10_hi >> (65 - shift as usize)) + UIntIntoU64(even).into();
         let round_up = ((fractional + half_ulp) >> EXTRA_SHIFT) != 0;
         let round_down = half_ulp > fractional;
         integral += u64::from(round_up);
@@ -1480,12 +1745,12 @@ where
     // s - shorter underestimate, S - shorter overestimate
     // l - longer underestimate,  L - longer overestimate
     let pow10 = unsafe { d.pow10_significands.get_unchecked(-dec_exp - 1) };
-    let p = umul192_hi128(pow10.hi, pow10.lo, (bin_sig << shift).into());
+    let p = umul192_hi128(pow10.hi, pow10.lo, UIntIntoU64(bin_sig << shift).into());
 
     let mut integral = p.hi >> EXTRA_SHIFT;
     let fractional = (p.hi << (64 - EXTRA_SHIFT)) | (p.lo >> EXTRA_SHIFT);
 
-    let half_ulp = (pow10.hi >> (EXTRA_SHIFT + 1 - shift as usize)) + even.into();
+    let half_ulp = (pow10.hi >> (EXTRA_SHIFT + 1 - shift as usize)) + UIntIntoU64(even).into();
     let round_up = fractional.wrapping_add(half_ulp) < fractional;
     let round_down = half_ulp > fractional;
     integral += u64::from(round_up); // Compute integral before digit.
@@ -1503,13 +1768,56 @@ where
     }
 }
 
+}
+}}
+
+impl_for_floats! {{
+    #[common]
+    {
+        mod usize {
+            pub(crate) const fn from(v: bool) -> usize {
+                v as _
+            }
+        }
+        mod i64 {
+            pub(crate) const fn from_bool(v: bool) -> i64 {
+                v as _
+            }
+            pub(crate) const fn from(v: u8) -> i64 {
+                v as _
+            }
+        }
+        mod i32 {
+            pub(crate) const fn from(v: bool) -> i32 {
+                v as _
+            }
+        }
+        mod u16 {
+            pub(crate) const fn from(v: u8) -> u16 {
+                v as _
+            }
+        }
+    }
+    {
+        use f32 as FLOAT;
+    }
+    {
+        use f64 as FLOAT;
+    }
+
+    type Float = ConstFloat<FLOAT>;
+
+    type FloatDecDigitsType = <Float as FloatTraits>::DecDigitsType;
+
+    impl Float {
+        const FIXED_DEC_EXP: ConstRange<RangeInclusive<i32>> = ConstRange(<Self as FloatTraits>::FIXED_DEC_EXP);
+
 /// Writes the shortest correctly rounded decimal representation of `value` to
 /// `buffer`. `buffer` should point to a buffer of size `buffer_size` or larger.
 #[cfg_attr(feature = "no-panic", no_panic)]
-unsafe fn write<Float>(value: Float, mut buffer: *mut u8) -> *mut u8
-where
-    Float: FloatTraits,
+const unsafe fn write_to_zmij_buffer(self, mut buffer: *mut u8) -> *mut u8
 {
+    let value = self;
     let bits = value.to_bits();
     // It is beneficial to extract exponent and significand early.
     let bin_exp = Float::get_exp(bits); // binary exponent
@@ -1523,6 +1831,7 @@ where
     #[allow(unused_mut)]
     let mut d = ptr::addr_of!(STATIC_DATA);
     let d = unsafe {
+        #[cfg(any())] // TODO: is this ok?
         // Load constants from memory.
         #[cfg(all(any(target_arch = "aarch64", target_arch = "x86_64"), not(miri)))]
         asm!("/*{0}*/", inout(reg) d);
@@ -1536,7 +1845,7 @@ where
 
     let mut dec;
     if bin_exp == 0 {
-        if bin_sig == Float::SigType::from(0) {
+        if bin_sig == Float::SigType_from(0) {
             return unsafe {
                 *buffer = b'0';
                 *buffer.add(1) = b'.';
@@ -1544,9 +1853,9 @@ where
                 buffer.add(3)
             };
         }
-        dec = to_decimal::<Float, Float::SigType>(bin_sig, 1, true, d);
+        dec = Float::to_decimal(bin_sig, 1, true, d);
         let mut dec_sig =
-            dec.sig * 10 + (-i64::from(dec.has_last_digit) & i64::from(dec.last_digit));
+            dec.sig * 10 + (-i64::from_bool(dec.has_last_digit) & i64::from(dec.last_digit));
         let mut dec_exp = dec.exp;
         while dec_sig < threshold as i64 {
             dec_sig *= 10;
@@ -1561,10 +1870,10 @@ where
             has_last_digit: last_digit != 0,
         };
     } else {
-        dec = to_decimal::<Float, Float::SigType>(
+        dec = Float::to_decimal(
             bin_sig | Float::IMPLICIT_BIT,
             bin_exp,
-            bin_sig != Float::SigType::from(0),
+            bin_sig != Float::SigType_from(0),
             d,
         );
     }
@@ -1572,7 +1881,7 @@ where
     let has_extra_digit = dec.sig >= threshold as i64;
     let mut dec_exp = dec.exp + Float::MAX_DIGITS10 as i32 - 2 + i32::from(has_extra_digit);
     if Float::NUM_BITS == 32 && dec.sig < 1_000_000 {
-        dec.sig = 10 * dec.sig + (-i64::from(has_last_digit) & i64::from(dec.last_digit));
+        dec.sig = 10 * dec.sig + (-i64::from_bool(has_last_digit) & i64::from(dec.last_digit));
         has_last_digit = false;
         dec_exp -= 1;
     }
@@ -1584,6 +1893,11 @@ where
         && ExpFloatShuffleTable::ENABLE
         && !Float::FIXED_DEC_EXP.contains(&dec_exp)
     {
+        mod i32 {
+            pub(crate) const fn from(v: u8) -> i32 {
+                v as _
+            }
+        }
         unsafe {
             let exp_data = *d
                 .exp_strings
@@ -1605,7 +1919,7 @@ where
     unsafe {
         buffer
             .add(usize::from(has_extra_digit))
-            .cast::<Float::DecDigitsType>()
+            .cast::<FloatDecDigitsType>()
             .write_unaligned(dig.digits);
         buffer
             .add(usize::from(has_extra_digit) + bcd_size)
@@ -1702,6 +2016,9 @@ where
     }
 }
 
+    }
+}}
+
 /// Safe API for formatting floating point numbers to text.
 ///
 /// ## Example
@@ -1720,7 +2037,7 @@ impl Buffer {
     /// for efficiency.
     #[inline]
     #[cfg_attr(feature = "no-panic", no_panic)]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         let bytes = [MaybeUninit::<u8>::uninit(); BUFFER_SIZE];
         Buffer { bytes }
     }
@@ -1738,6 +2055,32 @@ impl Buffer {
     /// checks for special cases.
     #[cfg_attr(feature = "no-panic", no_panic)]
     pub fn format<F: Float>(&mut self, f: F) -> &str {
+        f.impl_format(self)
+    }
+}
+
+struct BufferOfFloat<'a, F>(&'a mut Buffer, core::marker::PhantomData<F>);
+
+impl<'a, F> BufferOfFloat<'a, F> {
+    #[inline]
+    const fn new(buffer: &'a mut Buffer) -> Self {
+        Self(buffer, core::marker::PhantomData)
+    }
+}
+
+impl_for_floats!({
+    {
+        use f32 as FLOAT;
+    }
+    {
+        use f64 as FLOAT;
+    }
+
+    #[rustfmt::skip]
+    impl<'a> BufferOfFloat<'a, FLOAT> {
+    #[inline]
+    const fn format(self, f: FLOAT) -> &'a str {
+        let f = ConstFloat(f);
         if f.is_nonfinite() {
             f.format_nonfinite()
         } else {
@@ -1745,6 +2088,24 @@ impl Buffer {
         }
     }
 
+    }
+});
+
+impl<'a> BufferOfFloat<'a, f32> {
+    #[inline]
+    const fn format_finite(self, f: ConstFloat<f32>) -> &'a str {
+        self.0.format_finite_f32(f.0)
+    }
+}
+
+impl<'a> BufferOfFloat<'a, f64> {
+    #[inline]
+    const fn format_finite(self, f: ConstFloat<f64>) -> &'a str {
+        self.0.format_finite_f64(f.0)
+    }
+}
+
+impl Buffer {
     /// Print a floating point number into this buffer and return a reference to
     /// its string representation within the buffer.
     ///
@@ -1762,6 +2123,42 @@ impl Buffer {
     /// [`is_infinite`]: f64::is_infinite
     #[cfg_attr(feature = "no-panic", no_panic)]
     pub fn format_finite<F: Float>(&mut self, f: F) -> &str {
+        f.impl_format_finite(self)
+    }
+}
+
+macro_rules! buffer_methods_for_floats {
+    (
+        #[$FLOAT:ident]
+        #[$f32:ident($method_for_f32:ident)]
+        #[$f64:ident($method_for_f64:ident)]
+        $(#$attr:tt)*
+        const fn __$args:tt -> $ReturnTy:ty $body:block
+    ) => {
+        const _: () = {
+            use $f32 as $FLOAT;
+            impl Buffer {
+                $(#$attr)*
+                const fn $method_for_f32 $args -> $ReturnTy $body
+            }
+        };
+        const _: () = {
+            use $f64 as $FLOAT;
+            impl Buffer {
+                $(#$attr)*
+                const fn $method_for_f64 $args -> $ReturnTy $body
+            }
+        };
+    };
+}
+
+buffer_methods_for_floats! {
+    #[FLOAT]
+    #[f32(format_finite_f32)]
+    #[f64(format_finite_f64)]
+    #[inline]
+    const fn __(&mut self, f: FLOAT) -> &str {
+        let f = ConstFloat(f);
         unsafe {
             let end = f.write_to_zmij_buffer(self.bytes.as_mut_ptr().cast::<u8>());
             let len = end.offset_from(self.bytes.as_ptr().cast::<u8>()) as usize;
@@ -1783,14 +2180,27 @@ impl Float for f32 {}
 impl Float for f64 {}
 
 mod private {
+    use crate::{Buffer, BufferOfFloat, ConstFloat};
+
     pub trait Sealed: crate::traits::Float {
-        fn is_nonfinite(self) -> bool;
-        fn format_nonfinite(self) -> &'static str;
-        unsafe fn write_to_zmij_buffer(self, buffer: *mut u8) -> *mut u8;
+        fn impl_format_finite(self, buffer: &mut Buffer) -> &str;
+        fn impl_format(self, buffer: &mut Buffer) -> &str;
     }
 
     impl Sealed for f32 {
+        fn impl_format_finite(self, buffer: &mut Buffer) -> &str {
+            buffer.format_finite_f32(self)
+        }
+
+        fn impl_format(self, buffer: &mut Buffer) -> &str {
+            BufferOfFloat::<Self>::new(buffer).format(self)
+        }
+    }
+
+    impl ConstFloat<f32> {
         #[inline]
+        #[rustfmt::skip]
+        pub(crate) const
         fn is_nonfinite(self) -> bool {
             const EXP_MASK: u32 = 0x7f800000;
             let bits = self.to_bits();
@@ -1799,6 +2209,8 @@ mod private {
 
         #[cold]
         #[cfg_attr(feature = "no-panic", inline)]
+        #[rustfmt::skip]
+        pub(crate) const
         fn format_nonfinite(self) -> &'static str {
             const MANTISSA_MASK: u32 = 0x007fffff;
             const SIGN_MASK: u32 = 0x80000000;
@@ -1811,15 +2223,22 @@ mod private {
                 crate::INFINITY
             }
         }
-
-        #[cfg_attr(feature = "no-panic", inline)]
-        unsafe fn write_to_zmij_buffer(self, buffer: *mut u8) -> *mut u8 {
-            unsafe { crate::write(self, buffer) }
-        }
     }
 
     impl Sealed for f64 {
+        fn impl_format_finite(self, buffer: &mut Buffer) -> &str {
+            buffer.format_finite_f64(self)
+        }
+
+        fn impl_format(self, buffer: &mut Buffer) -> &str {
+            BufferOfFloat::<Self>::new(buffer).format(self)
+        }
+    }
+
+    impl ConstFloat<f64> {
         #[inline]
+        #[rustfmt::skip]
+        pub(crate) const
         fn is_nonfinite(self) -> bool {
             const EXP_MASK: u64 = 0x7ff0000000000000;
             let bits = self.to_bits();
@@ -1828,6 +2247,8 @@ mod private {
 
         #[cold]
         #[cfg_attr(feature = "no-panic", inline)]
+        #[rustfmt::skip]
+        pub(crate) const
         fn format_nonfinite(self) -> &'static str {
             const MANTISSA_MASK: u64 = 0x000fffffffffffff;
             const SIGN_MASK: u64 = 0x8000000000000000;
@@ -1840,11 +2261,6 @@ mod private {
                 crate::INFINITY
             }
         }
-
-        #[cfg_attr(feature = "no-panic", inline)]
-        unsafe fn write_to_zmij_buffer(self, buffer: *mut u8) -> *mut u8 {
-            unsafe { crate::write(self, buffer) }
-        }
     }
 }
 
@@ -1855,3 +2271,30 @@ impl Default for Buffer {
         Buffer::new()
     }
 }
+
+pub struct Format<'a, T>(pub &'a mut Buffer, pub T);
+
+pub struct FormatFinite<'a, T>(pub &'a mut Buffer, pub T);
+
+impl_for_floats!({
+    {
+        use f32 as FLOAT;
+    }
+    {
+        use f64 as FLOAT;
+    }
+
+    impl<'a> Format<'a, FLOAT> {
+        pub const fn call_once(self) -> &'a str {
+            let Self(this, f) = self;
+            BufferOfFloat::<FLOAT>::new(this).format(f)
+        }
+    }
+
+    impl<'a> FormatFinite<'a, FLOAT> {
+        pub const fn call_once(self) -> &'a str {
+            let Self(this, f) = self;
+            BufferOfFloat::<FLOAT>::new(this).format_finite(ConstFloat(f))
+        }
+    }
+});
