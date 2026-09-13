@@ -372,6 +372,7 @@ impl FloatTraits for f32 {
     #[cfg(any())]
     #[cfg(all(target_arch = "aarch64", target_feature = "neon", not(miri)))]
     type DecUnshuffledType = uint8x16_t;
+    #[cfg(any())]
     #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
     type DecUnshuffledType = __m128i;
 }
@@ -1552,6 +1553,7 @@ unsafe fn write_exp_float_simd_32(
             .get_entry(dig.num_digits as i32, has_last_digit, has_extra_digit)
     };
 
+    #[cfg(any())]
     #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1", not(miri)))]
     unsafe {
         let ascii: __m128i = _mm_or_si128(
