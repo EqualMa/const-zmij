@@ -41,7 +41,7 @@ jobs:
         run: echo RUSTFLAGS=${RUSTFLAGS}\ -Zrandomize-layout >> $GITHUB_ENV
         if: matrix.rust == 'nightly'
       - run: cargo check
-      - run: cargo build --tests --features no-panic --release
+      - run: cargo build --tests --release
         if: matrix.rust == 'nightly'
       - run: cargo test
         if: matrix.rust != '1.71.0'
@@ -51,7 +51,7 @@ jobs:
       - run: cargo check
         env:
           RUSTFLAGS: ${{env.RUSTFLAGS}} -Ctarget-cpu=native
-      - run: cargo build --tests --features no-panic --release
+      - run: cargo build --tests --release
         if: matrix.rust == 'nightly'
         env:
           RUSTFLAGS: ${{env.RUSTFLAGS}} -Ctarget-cpu=native
@@ -64,7 +64,7 @@ jobs:
         env:
           RUSTFLAGS: ${{env.RUSTFLAGS}} -Ctarget-cpu=native
       - run: cargo --config='profile.dev.opt-level="s"' check
-      - run: cargo --config='profile.release.opt-level="s"' build --tests --features no-panic --release
+      - run: cargo --config='profile.release.opt-level="s"' build --tests --release
         if: matrix.rust == 'nightly'
       - run: cargo --config='profile.dev.opt-level="s"' test
         if: matrix.rust != '1.71.0'
