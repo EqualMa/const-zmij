@@ -10,7 +10,7 @@ exclude = ["*.png"]
 keywords = ["float"]
 license = "MIT"
 repository = "https://github.com/dtolnay/zmij"
-rust-version = "1.71"
+rust-version = "1.83"
 
 [dependencies]
 no-panic = { version = "0.1.36", optional = true }
