@@ -1,15 +1,19 @@
 [package]
 name = "const-zmij"
 version = "1.0.23"
-authors = ["David Tolnay <dtolnay@gmail.com>"]
+authors = [
+    # 
+    "David Tolnay <dtolnay@gmail.com>",
+    "Equal Ma <equalma@outlook.com>",
+]
 categories = ["value-formatting", "no-std", "no-std::no-alloc"]
 description = "A double-to-string conversion algorithm based on Schubfach and xjb"
-documentation = "https://docs.rs/zmij"
+documentation = "https://docs.rs/const-zmij"
 edition = "2021"
 exclude = ["*.png"]
 keywords = ["float"]
 license = "MIT"
-repository = "https://github.com/dtolnay/zmij"
+repository = "https://github.com/EqualMa/const-zmij"
 rust-version = "1.83"
 
 [dependencies]
