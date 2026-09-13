@@ -4,6 +4,8 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use std::hint;
 use std::io::Write;
 
+extern crate const_zmij as zmij;
+
 fn do_bench(c: &mut Criterion, group_name: &str, float: f64) {
     let mut group = c.benchmark_group(group_name);
     group.bench_function("zmij", |b| {

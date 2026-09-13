@@ -10,7 +10,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-zmij = { path = ".." }
+zmij = { path = "..", package = "const-zmij" }
 
 [[bin]]
 name = "fuzz_zmij"

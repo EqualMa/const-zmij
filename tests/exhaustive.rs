@@ -1,5 +1,7 @@
 #![cfg_attr(not(check_cfg), allow(unexpected_cfgs))]
 
+extern crate const_zmij as zmij;
+
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread;

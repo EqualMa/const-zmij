@@ -1,3 +1,5 @@
+extern crate const_zmij as zmij;
+
 use rand::rngs::{SmallRng, SysRng};
 use rand::{Rng as _, SeedableRng as _};
 

@@ -19,6 +19,7 @@
 //! # Example
 //!
 //! ```
+//! extern crate const_zmij as zmij;
 //! fn main() {
 //!     let mut buffer = zmij::Buffer::new();
 //!     let printed = buffer.format(1.234);
@@ -2026,6 +2027,7 @@ const unsafe fn write_to_zmij_buffer(self, mut buffer: *mut u8) -> *mut u8
 /// ## Example
 ///
 /// ```
+/// extern crate const_zmij as zmij;
 /// let mut buffer = zmij::Buffer::new();
 /// let printed = buffer.format_finite(1.234);
 /// assert_eq!(printed, "1.234");

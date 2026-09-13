@@ -1,5 +1,5 @@
 [package]
-name = "zmij"
+name = "const-zmij"
 version = "1.0.23"
 authors = ["David Tolnay <dtolnay@gmail.com>"]
 categories = ["value-formatting", "no-std", "no-std::no-alloc"]
