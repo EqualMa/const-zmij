@@ -1,6 +1,6 @@
 [package]
 name = "const-zmij"
-version = "1.0.23"
+version = "0.1.0"
 authors = [
     # 
     "David Tolnay <dtolnay@gmail.com>",
